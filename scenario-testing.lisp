@@ -83,68 +83,165 @@
 	  (incf count))))
   (/ hits count 1.0)))
 
-;figure out which combination of parameters produces the most
-;accurate predictions (for both GLM and KNN)
-(defun identify-best-parameters (prediction-start-week prediction-end-week tr-start-week tr-end-week n)
-  (with-open-file (stream "epl-predictor-params.txt" :direction :output :if-exists :supersede)
-
-    (progn
-
-      (let* ((params '(a b c d e f g h i j))
-	     (param-combinations (combinations params n))
-	     (tr-data1) (tr-data2) 
-	     (predictions-glm) (best-param-combination-glm nil) (highest-average-accuracy-glm 0)
-	     (predictions-knn) (best-param-combination-knn nil) (highest-average-accuracy-knn 0))
-
-
-	;;(dolist (sub-combinations param-combinations)
-      
-	  (dolist (p param-combinations)
         
-	    (format stream "Evaluating combination: ~A~%" p)
-        
-	    (load-all-data)
-        
-	    (setf tr-data1 (generate-training-data tr-start-week tr-end-week nil p))
-	    (setf tr-data2 (generate-training-data tr-start-week tr-end-week nil p))        
-    
-	    (let ((sum-glm 0) (sum-knn 0))
-
-	      (loop for prediction-week from prediction-start-week to prediction-end-week do
-
-		   (progn 
-		     (load-matches-upto (1- prediction-week))
-      
-		     (setf predictions-glm (predictions-for-week prediction-week #'predict-glm tr-data1 p))
-		     (setf predictions-knn (predictions-for-week prediction-week #'predict-knn 3 t tr-data2 p))
-	       
-		     (load-matches prediction-week)
-      
-		     (incf sum-glm (accuracy-of-predictions predictions-glm))
-		     (incf sum-knn (accuracy-of-predictions predictions-knn))))
-
-	      (let ((accuracy (/ sum-glm (1+ (- prediction-end-week prediction-start-week)))))
-		(if (> accuracy highest-average-accuracy-glm)
-		    (setq best-param-combination-glm p highest-average-accuracy-glm accuracy)))
-    
-	      (let ((accuracy (/ sum-knn (1+ (- prediction-end-week prediction-start-week)))))
-		(if (> accuracy highest-average-accuracy-knn)
-		    (setq best-param-combination-knn p highest-average-accuracy-knn accuracy)))))
-
-	(format stream "Linear regression:~%")
-	(format stream "Highest average accuracy achieved: ~f~%" highest-average-accuracy-glm)
-	(format stream "Corresponding parameters: ~A~%"  best-param-combination-glm)
-	
-	(format stream "KNN (average):~%")
-	(format stream "Highest average accuracy achieved: ~f~%" highest-average-accuracy-knn)
-	(format stream "Corresponding parameters: ~A~%" best-param-combination-knn))))
-
-    (clean-all-data))
-         
 ;average success rates for the different
 ;prediction methods, at the end of the specified number
 ;of weeks of the season
 (defun average-success-rates (week)
   (let ((result (loop for i from 8 to week collect (test i 4 (1- i) 3 nil))))
     (loop for i from 0 to 4 do (print (average #'+ (loop for x in result collect (nth i x)))))))        
-	
+
+;figure out which combination of parameters produces the most
+;accurate predictions (for both GLM and KNN)	
+(defun identify-best-parameters (prediction-start-week 
+				 prediction-end-week
+				 tr-start-week
+				 tr-end-week
+				 nof-params 
+				 prediction-method
+				 &optional
+				 k)
+
+  (if (and (not (equal prediction-method "GLM"))
+	   (null k))
+      (error "Parameter 'k' should be specified for KNN-CLASSES and KNN-AVERAGE"))
+
+  (with-open-file (stream "epl-predictor-params.txt" :direction :output :if-exists :supersede)
+
+    (progn
+#|
+      Parameter descriptions
+
+      A	Home record of home team
+      B	Away record of away team
+      C	Total record of home team
+      D	Total record of away team
+      E	Most recent record (last three matches) of home team
+      F	Most recent record (last three matches) of away team
+      G	Goal difference of home team
+      H	Goal difference of away team
+      I	Rank of home team in points table
+      J	Rank of away team in points table
+|#
+
+      (let* ((full-param-list '("A" "B" "C" "D" "E" "F" "G" "H" "I" "J"))
+	     (param-combinations (combinations full-param-list nof-params))
+	     (tr-data)
+	     (predictions) (best-param-combination) (highest-average-accuracy 0))
+
+	(load-all-data)
+      
+	(dolist (param-combination param-combinations)
+        
+	  (format stream "Evaluating combination: ~A~%" param-combination)
+        
+
+        
+	  (setf tr-data (generate-training-data tr-start-week 
+						tr-end-week 
+						(equal prediction-method "KNN-CLASSES")
+						param-combination))        
+
+	  (let ((sum 0))
+
+	    (loop for prediction-week from prediction-start-week to prediction-end-week do
+
+		 (if (>= (length (nth (1- prediction-week) match-data)) 5)
+		     
+		     (progn 
+
+		       (setq matches nil)
+
+		       (load-matches-upto (1- prediction-week))
+      
+		       (setf predictions (cond ((equal prediction-method "GLM")
+						(predictions-for-week prediction-week 
+								      #'predict-glm tr-data param-combination))
+					       ((equal prediction-method "KNN-CLASSES")
+						(predictions-for-week prediction-week 
+								      #'predict-knn k nil tr-data param-combination))
+					       ((equal prediction-method "KNN-AVERAGE")
+						(predictions-for-week prediction-week
+								      #'predict-knn k t tr-data param-combination))
+					       (t (error "Unknown method"))))
+
+		       (load-matches prediction-week)
+      
+		       (incf sum (accuracy-of-predictions predictions)))))
+
+	    (let ((accuracy (/ sum (1+ (- prediction-end-week prediction-start-week)))))
+	      (if (> accuracy highest-average-accuracy)
+		  (setq best-param-combination param-combination highest-average-accuracy accuracy)))))
+
+	(format stream "~A:~%" prediction-method)	
+	(format stream "Highest average accuracy achieved: ~f~%" highest-average-accuracy)
+	(format stream "Corresponding parameters: ~A~%" best-param-combination))))
+  
+  (clean-all-data))
+
+;;computes average and median accuracy for a method
+(defun report-accuracy (pred-start-week 
+			pred-end-week
+			tr-start-week 
+			tr-end-week 
+			params
+			prediction-method 
+			&optional
+			k)
+
+  (if (not (or (equal prediction-method "KNN-CLASSES")
+	       (equal prediction-method "KNN-AVERAGE")
+	       (equal prediction-method "GLM")))
+      (error "Prediction method should be GLM, KNN-CLASSES or KNN-AVERAGE"))
+
+  (if (and (not (equal prediction-method "GLM"))
+	   (null k))
+      (error "Parameter 'k' should be specified for KNN-CLASSES and KNN-AVERAGE"))
+
+  (let ((accuracies-list) (tr-data) (predictions))
+
+    (load-all-data)
+        
+    (setq tr-data (generate-training-data tr-start-week 
+					  tr-end-week 
+					  (equal prediction-method "KNN-CLASSES")
+					  params))        
+
+    (loop for prediction-week from pred-start-week to pred-end-week do
+
+	 ;;to filter out those match weeks with a small number
+	 ;;of matches, which may skew the accuracy
+	 (if (>= (length (nth (1- prediction-week) match-data)) 5)
+
+	     (progn 
+
+	       (setq matches nil)
+
+	       (load-matches-upto (1- prediction-week))
+      
+	       (setq predictions (cond ((equal prediction-method "GLM")
+					(predictions-for-week prediction-week 
+							      #'predict-glm tr-data params))
+				       ((equal prediction-method "KNN-CLASSES")
+					(predictions-for-week prediction-week 
+							      #'predict-knn k nil tr-data params))
+				       ((equal prediction-method "KNN-AVERAGE")
+					(predictions-for-week prediction-week
+							      #'predict-knn k t tr-data params))
+				       (t (error "Unknown method"))))
+
+	       (load-matches prediction-week)
+      
+	       (setf accuracies-list (nconc accuracies-list (list (accuracy-of-predictions predictions)))))))
+
+    (format t "Prediction method: ~A:~%" prediction-method)
+    (format t "Parameters: ~A~%" params)
+    (format t "~A~%" accuracies-list)
+    (format t "Average accuracy achieved: ~f~%" (average #'+ accuracies-list))
+    (format t "Median accuracy achieved: ~f~%" (median accuracies-list))
+    (format t "Max accuracy achieved: ~f~%" (apply #'max accuracies-list))
+    (format t "Min accuracy achieved: ~f~%" (apply #'min accuracies-list)))
+
+  
+  (clean-all-data))
+			
