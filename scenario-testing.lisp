@@ -142,13 +142,15 @@
 						(equal prediction-method "KNN-CLASSES")
 						param-combination))        
 
-	  (let ((sum 0))
+	  (let ((sum 0.0) (count 0))
 
 	    (loop for prediction-week from prediction-start-week to prediction-end-week do
 
 		 (if (>= (length (nth (1- prediction-week) match-data)) 5)
 		     
 		     (progn 
+
+		       (incf count)
 
 		       (setq matches nil)
 
@@ -169,7 +171,7 @@
       
 		       (incf sum (accuracy-of-predictions predictions)))))
 
-	    (let ((accuracy (/ sum (1+ (- prediction-end-week prediction-start-week)))))
+	    (let ((accuracy (/ sum count)))
 	      (if (> accuracy highest-average-accuracy)
 		  (setq best-param-combination param-combination highest-average-accuracy accuracy)))))
 
